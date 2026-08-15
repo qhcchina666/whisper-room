@@ -64,9 +64,9 @@ export function ChatScreen({ myName, roomId, dark, onLeave, onToggleTheme }: Pro
   //   all fail/timeout → 'blocked' (firewall / network down)
   useEffect(() => {
     const trackers = [
-      'wss://tracker.webtorrent.dev',
       'wss://tracker.openwebtorrent.com',
       'wss://tracker.btorrent.xyz',
+      'wss://tracker.fastcast.nz',
     ]
     let failed = 0
     let mounted = true
@@ -112,9 +112,9 @@ export function ChatScreen({ myName, roomId, dark, onLeave, onToggleTheme }: Pro
         appId: 'whisper-room',
         relayConfig: {
           urls: [
-            'wss://tracker.webtorrent.dev',
             'wss://tracker.openwebtorrent.com',
             'wss://tracker.btorrent.xyz',
+            'wss://tracker.fastcast.nz',
           ],
         },
         // trickleIce: true sends the offer immediately instead of waiting up to 15s for
