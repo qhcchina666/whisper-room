@@ -55,13 +55,13 @@ export function ChatScreen({ myName, roomId, dark, onLeave, onToggleTheme }: Pro
   const fileInputRef        = useRef<HTMLInputElement>(null)
   const blobUrlsRef         = useRef<string[]>([])
   const bottomRef           = useRef<HTMLDivElement>(null)
+  const roomRef = useRef<ReturnType<typeof joinRoom> | null>(null)
+  const retryTimerRef = useRef<number | null>(null)
 
   const { green, muted, border, textC } = themeTokens(dark)
   const onlineCount = peerDisplay.length + 1
 
-  // Probe all trackers:
-  //   first success  → 'ready'   (peer discovery active)
-  //   all fail/timeout → 'blocked' (firewall / network down)
+  // Tracker 连通探测
   useEffect(() => {
     const trackers = [
       'wss://tracker.openwebtorrent.com',
@@ -80,7 +80,7 @@ export function ChatScreen({ myName, roomId, dark, onLeave, onToggleTheme }: Pro
         if (!mounted) return
         failed++
         if (failed >= trackers.length) setConnState('blocked')
-      }, 5000)
+      },4000)
       timers.push(tick)
       ws.onopen = () => {
         clearTimeout(tick)
@@ -102,13 +102,17 @@ export function ChatScreen({ myName, roomId, dark, onLeave, onToggleTheme }: Pro
     }
   }, [])
 
+  //房间连接 + 超时自动重连
   useEffect(() => {
-    let room: ReturnType<typeof joinRoom> | null = null
+    let mounted = true
+    function createRoom(){
+      roomRef.current?.leave()
+      peerNamesRef.current.clear()
+      localFilesRef.current.clear()
+      pendingMimeRef.current.clear()
+      pendingSourceRef.current.clear()
 
-    // 200ms > Trystero's internal 99ms leave-delay, preventing the race condition
-    // where a fast rejoin receives the still-dying previous room from occupiedRooms.
-    const timer = setTimeout(() => {
-      room = joinRoom({
+      const room = joinRoom({
         appId: 'whisper-room',
         relayConfig: {
           urls: [
@@ -117,35 +121,19 @@ export function ChatScreen({ myName, roomId, dark, onLeave, onToggleTheme }: Pro
             'wss://tracker.fastcast.nz',
           ],
         },
-        // trickleIce: true sends the offer immediately instead of waiting up to 15s for
-        // all ICE candidates — dramatically reduces time-to-connect
         trickleIce: true,
         rtcConfig: {
           iceServers: [
             { urls: [
               'stun:stun.l.google.com:19302',
               'stun:stun1.l.google.com:19302',
-              'stun:stun2.l.google.com:19302',
-              'stun:stun3.l.google.com:19302',
-              'stun:stun4.l.google.com:19302',
             ]},
-            // Multiple TURN endpoints + TLS variant: gives the browser more relay paths
-            // through AP-isolated LANs and same-NAT networks where direct P2P fails.
-            {
-              urls: [
-                'turn:openrelay.metered.ca:80',
-                'turn:openrelay.metered.ca:443',
-                'turn:openrelay.metered.ca:443?transport=tcp',
-                'turns:openrelay.metered.ca:443?transport=tcp',
-              ],
-              username: 'openrelayproject',
-              credential: 'openrelayproject',
-            },
           ],
-          // Pre-gather candidates before offer — reduces connection latency on LAN
-          iceCandidatePoolSize: 10,
+          iceCandidatePoolSize:10
         },
       }, roomId)
+
+      roomRef.current = room
 
       const hello      = room.makeAction('hello')      as unknown as Action<HelloPayload>
       const msg        = room.makeAction('msg')        as unknown as Action<TextPayload>
@@ -190,7 +178,6 @@ export function ChatScreen({ myName, roomId, dark, onLeave, onToggleTheme }: Pro
       }
 
       file.onMessage = ({ file: f, displayName }, { peerId }) => {
-        // Store MIME and source so we can look them up when binary arrives / user accepts
         pendingMimeRef.current.set(f.id, f.mimeType ?? 'application/octet-stream')
         pendingSourceRef.current.set(f.id, peerId)
         setMessages(ms => [...ms, {
@@ -198,7 +185,6 @@ export function ChatScreen({ myName, roomId, dark, onLeave, onToggleTheme }: Pro
         }])
       }
 
-      // Binary payload: [4-byte id-length][id][file data]
       fileData.onMessage = (raw: ArrayBuffer) => {
         const { id, data } = decodeFileChunk(raw)
         const mime = pendingMimeRef.current.get(id) ?? 'application/octet-stream'
@@ -208,28 +194,33 @@ export function ChatScreen({ myName, roomId, dark, onLeave, onToggleTheme }: Pro
         setReadyFiles(prev => ({ ...prev, [id]: url }))
       }
 
-      // Receiver accepted — send the buffered file data only to that peer
       fileAccept.onMessage = ({ id }, { peerId }) => {
         const data = localFilesRef.current.get(id)
         if (!data) return
         const chunk = encodeFileChunk(id, data)
         fileDataActionRef.current?.send(chunk as unknown as ArrayBuffer, { target: peerId })
       }
-    }, 200)
+      //12s没搜到任何人自动重连房间
+      retryTimerRef.current = window.setTimeout(()=>{
+        if(mounted && peerNamesRef.current.size === 0){
+          createRoom()
+        }
+      },12000)
+    }
+
+    const startTimer = setTimeout(createRoom,200)
 
     return () => {
-      clearTimeout(timer)
+      mounted = false
+      clearTimeout(startTimer)
+      if(retryTimerRef.current) clearTimeout(retryTimerRef.current)
       msgActionRef.current        = null
       fileActionRef.current       = null
       fileDataActionRef.current   = null
       fileAcceptActionRef.current = null
       blobUrlsRef.current.forEach(url => URL.revokeObjectURL(url))
       blobUrlsRef.current = []
-      peerNamesRef.current.clear()
-      localFilesRef.current.clear()
-      pendingMimeRef.current.clear()
-      pendingSourceRef.current.clear()
-      room?.leave()
+      roomRef.current?.leave()
     }
   }, [roomId, myName])
 
@@ -251,11 +242,9 @@ export function ChatScreen({ myName, roomId, dark, onLeave, onToggleTheme }: Pro
     const fileInfo = { id, name: f.name, size: f.size, mimeType }
     const data     = await f.arrayBuffer()
 
-    // Buffer data locally; send only when each receiver accepts
     localFilesRef.current.set(id, data)
     await fileActionRef.current?.send({ displayName: myName, file: fileInfo })
 
-    // Sender gets immediate local preview — no accept needed for own files
     const blob = new Blob([data], { type: mimeType })
     const url  = URL.createObjectURL(blob)
     blobUrlsRef.current.push(url)
