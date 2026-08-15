@@ -13,9 +13,6 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,png,svg,ico,woff2,wasm,json}'],
         maximumFileSizeToCacheInBytes: 10 * 1024 * 1024,
-        // Serve index.html for all navigation requests (SPA fallback).
-        // Without this, opening from iPhone home screen shows blank —
-        // the SW intercepts the navigation but has no response for it.
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api/, /^\/v1/],
         runtimeCaching: [
@@ -48,7 +45,6 @@ export default defineConfig({
         background_color: '#ffffff',
         theme_color: '#111111',
         orientation: 'any',
-        // @ts-ignore — FAS-specific manifest extension
         min_viewport_width: 320,
         icons: [
           { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
